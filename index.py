@@ -1,5 +1,5 @@
 import streamlit as st
-from datetime import date
+from datetime import date,timedelta
 import pandas as pd
 import sqlite3
 import re
@@ -12,7 +12,8 @@ with st.sidebar:
     choix = st.radio("", ["Accueil", "Liste des Clients", "Liste des Réservations","Les chambres dispinible", "Ajouter Client","Ajouter Réservation"])
 
 data = sqlite3.connect("GrHotel.db")
-sqlite3.connect("PARGMA foreign_keys =ON ")
+cur = data.cursor()
+cur.execute("PRAGMA foreign_keys = ON")
 
 if choix == "Accueil":
     st.header(" Bienvenue à l'application de gestion")
@@ -47,6 +48,7 @@ elif choix== "Ajouter Client":
 
     with st.form("ajout_client_form"):
         nom = st.text_input("Nom complet")
+        cin = st.text_input("CIN")
         adresse = st.text_input("Adresse")
         ville = st.text_input("Ville")
         cp = st.text_input("Code postal")
@@ -58,6 +60,9 @@ elif choix== "Ajouter Client":
             erreurs = []
             if not nom:
                 erreurs.append("Le nom est requis.")
+
+            if cin and not re.match(r"^[A-Z]{2}[0-9]{5}$", cin):
+                erreurs.append(" CIN invalide.")
 
             if not ville:
                 erreurs.append("La ville est requise.")
@@ -78,10 +83,9 @@ elif choix== "Ajouter Client":
                 for i in erreurs:
                     st.error(i)
             else:
-                cur = data.cursor()
                 cur.execute(
-                    "INSERT INTO Client ( Adresse, Ville, CodePostal, E_mail, Numero_tele, Nom_complet) VALUES ( ?, ?, ?, ?, ?, ?)",
-                    ( adresse, ville, cp, email, tel, nom)
+                    "INSERT INTO Client (CIN, Adresse, Ville, CodePostal, E_mail, Numero_tele, Nom_complet) VALUES ( ?, ?, ?, ?, ?, ?, ?)",
+                    (cin, adresse, ville, cp, email, tel, nom)
                 )
                 data.commit()
                 st.success("Client ajouté avec succès!")
@@ -91,49 +95,75 @@ elif choix== "Liste des Réservations":
     st.dataframe(reservation)
 
 elif choix== "Ajouter Réservation":   
-    st.title('Ajouter Réservation')  
+    st.title('Ajouter Réservation')
+
+    cur.execute("SELECT DISTINCT Ville FROM Hotel")
+    villes = [row[0] for row in cur.fetchall()]
+    cur.execute("SELECT  Type FROM TypeChambre")
+    types_chambres = [row[0] for row in cur.fetchall()]
 
     with st.form('Ajouter_Reser_form'):
-            Nomhotel=st.selectbox('Nom De hotel',["-- Veuillez choisir une Hotel --","Mariaf","Monalissa","Mogador"])
-            typeChambre=st.selectbox('Type de Chambre',["-- Veuillez choisir une Type de Chambre --","Simple","Double"])
-            fumeurs=st.selectbox('Fumeurs',["NON","OUI"])
-            date_debut=st.date_input('date debut')
-            date_fin=st.date_input('date fin')
-            Id_client=st.text_input('CNE')
+            cin=st.text_input('CIN :')
+            ville = st.selectbox("Choisir une ville :", villes)
+            typeChambre=st.selectbox('Type de Chambre :',types_chambres)
+            fumeurs=st.selectbox('Fumeurs :',["NON","OUI"])
+            nb_chambre=st.number_input("Nombre des chambres :", min_value=1, value=1)
+            date_debut=st.date_input('date debut :',min_value=date.today())
+            nb_jours = st.number_input("Nombre de jours :", min_value=1, value=1)
+            date_fin=date_debut + timedelta(days=int(nb_jours))
             submitted = st.form_submit_button("Ajouter")
 
             if submitted:
                 erreurs = []
-                if Nomhotel=='-- Veuillez choisir une Hotel --':
-                  erreurs.append("Vous devez sélectionner un Nom de Hotel valide")
-                if typeChambre=='-- Veuillez choisir une Type de Chambre --':
-                   erreurs.append("Vous devez sélectionner un Type de Chambre valide")
-                if not date_debut:
-                     erreurs.append("L'adresse est requise.")
-                if not date_fin:
-                        erreurs.append("L'adresse est requise.")
-                if not Id_client:
-                       erreurs.append("CNE est requise.")
+                if cin and not re.match(r"^[A-Z]{2}[0-9]{5}$", cin):
+                    erreurs.append(" CIN invalide.")
+                else:
+                    cur.execute("SELECT 1 FROM Client WHERE CIN = ?", (cin,))
+                    existe = cur.fetchone()
+                    if not existe:
+                        erreurs.append("Ce CIN n'existe pas dans la base des clients. Veuillez d'abord ajouter le client.")
                 if erreurs:
                     for i in erreurs:
                         st.error(i)
                 else:
-                    cur = data.cursor()
                     fumeurs=1 if fumeurs=='OUI' else 0
                     cur.execute("""
-                         SELECT C.Id_Chambre
-                         FROM Typechambre TC
-                         JOIN Chambre C ON TC.Id_type = C.Id_type
-                         WHERE TC.Type = ? AND C.fumeurs = ?
-                        """, (typeChambre, fumeurs))
-                    result = cur.fetchone()
-                    if result is None:
-                         st.error("tout les salle occupé")
+                       SELECT C.Id_Chambre
+                        FROM Typechambre TC
+                        JOIN Chambre C ON TC.Id_type = C.Id_type
+                        JOIN Hotel H ON C.Id_Hotel = H.Id_Hotel
+                        WHERE TC.Type = ?
+                        AND C.fumeurs = ?
+                        AND H.Ville = ?
+                        AND C.Id_Chambre NOT IN (
+                            SELECT Co.Id_Chambre
+                            FROM Concerner Co
+                            JOIN Reservation R ON Co.Id_Reservation = R.Id_Reservation
+                            WHERE NOT (
+                                R.Date_depart <= ? OR R.Date_arrivee >= ?
+                            )
+                        )
+                        LIMIT ?
+                    """, (typeChambre, fumeurs, ville, date_debut, date_fin,nb_chambre))
+                    result = [row[0] for row in cur.fetchall()]
+
+                    if len(result) < nb_chambre:
+                        if nb_chambre == 1:
+                            st.error("Aucune chambre du type sélectionné, avec l'option fumeurs choisie, n'est disponible pour les dates demandées.")
+                        else:
+                            st.error("Le nombre de chambres disponibles est insuffisant.")
                     else:
-                      IdCh=result[0]
-                      cur.execute(
-                      "INSERT INTO Reservation(NomHotel,Date_arrivee,Date_depart,Id_client,Id_Chambre,fumeurs)  VALUES ( ?, ?, ?, ?, ?,?)",
-                      (Nomhotel, date_debut, date_fin, Id_client, IdCh, fumeurs))
-                      data.commit()
-                      st.success("Client ajouté avec succès!")
+                        cur.execute(
+                        "INSERT INTO Reservation(Date_arrivee,Date_depart,CIN)  VALUES (?, ?, ?)",
+                        (date_debut, date_fin,cin))
+                        data.commit()
+                        id_reservation = cur.lastrowid
+
+                        for i in range(nb_chambre):
+                            cur.execute("""
+                                INSERT INTO Concerner (Id_Reservation, Id_Chambre)
+                                VALUES (?, ?)
+                            """, (id_reservation, result[i]))
+                        data.commit() 
+                        st.success("Réservation ajoutée avec succès !")
 data.close()
