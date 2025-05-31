@@ -128,7 +128,7 @@ elif choix== "Ajouter Réservation":
                         """, (typeChambre, fumeurs))
                     result = cur.fetchone()
                     if result is None:
-                         st.error("")
+                         st.error("tout les salle occupé")
                     else:
                       IdCh=result[0]
                       cur.execute(
